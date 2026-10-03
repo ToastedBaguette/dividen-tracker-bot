@@ -1,0 +1,28 @@
+{
+  "name": "dividen-tracker-bot",
+  "version": "1.0.0",
+  "description": "Personal Discord bot that tracks upcoming Indonesian stock (IDX) dividends — nearest cum date first",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js",
+    "preview": "node src/preview.js",
+    "test": "node --test"
+  },
+  "keywords": [
+    "discord",
+    "dividend",
+    "idx",
+    "saham",
+    "indonesia"
+  ],
+  "author": "Rony Hartono Irawan",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "discord.js": "^14.27.0",
+    "dotenv": "^16.6.1"
+  }
+}
