@@ -1,19 +1,22 @@
-import { Client, Events, GatewayIntentBits } from "discord.js";
+import { Client, Events, GatewayIntentBits, PermissionFlagsBits } from "discord.js";
 import dotenv from "dotenv";
-import { addDays, dateOf, firstBuyableDate, isDigestDay, normalizeTicker, nowParts, upcoming } from "./dividends.js";
+import { addDays, firstBuyableDate, isDigestDay, normalizeTicker, nowParts, payments, upcoming } from "./dividends.js";
 import {
-  DIGEST_TITLE,
   digestEmbed,
   healthAlertEmbed,
   helpEmbed,
+  isScheduledDigest,
   noDataEmbed,
   statusEmbed,
   tickerEmbed,
   unknownTickerEmbed,
   upcomingEmbed,
+  watchlistEmbed,
+  watchUsageEmbed,
 } from "./embeds.js";
 import { createFeed } from "./feed.js";
 import { buildProviders } from "./providers.js";
+import { applyWatchChange, createWatchlistStore, parseWatchArgs } from "./watchlist.js";
 import { getDividendHistory, getQuotes } from "./yahoo.js";
 
 dotenv.config();
@@ -31,10 +34,17 @@ const HELP_COMMANDS = new Set(["bantuan", "help", "cara pakai"]);
 const LIST_COMMANDS = new Set(["dividen", "dividend", "jadwal", "jadwal dividen", "semua"]);
 const DIGEST_COMMANDS = new Set(["ringkasan", "digest", "hari ini", "today"]);
 const STATUS_COMMANDS = new Set(["status"]);
+const WATCHLIST_COMMANDS = new Set(["pantauan", "pantau", "watchlist"]);
 // "dividen BBRI", "div bbri"
 const TICKER_COMMAND = /^(?:dividen|dividend|div)\s+([a-z]{4}(?:\.jk)?)$/;
+// "pantau BBRI 10 ASII", "lepas TLKM"
+const WATCH_COMMAND = /^(pantau|watch|lepas|unwatch)\s+(.+)$/;
+const UNWATCH_VERBS = new Set(["lepas", "unwatch"]);
 
 const SCHEDULER_INTERVAL_MS = 60 * 1000;
+// The digest's data may be this old: still fresh, and a retry after a failed post reuses it
+// instead of scraping the source again every minute
+const DIGEST_MAX_AGE_MS = 10 * 60 * 1000;
 
 if (!token) {
   console.error("DISCORD_TOKEN is not set");
@@ -57,6 +67,9 @@ const feed = createFeed({
   },
 });
 
+// Stored in a pinned message of the digest channel
+const watchlist = createWatchlistStore({ channel: digestChannel, botId: () => client.user.id });
+
 function isUserAuthorized(userId) {
   if (authorizedUsers.length === 0) return true;
   return authorizedUsers.includes(userId);
@@ -78,17 +91,33 @@ async function digestChannel() {
 }
 
 /**
- * Digest of cum dates still buyable within the next digestDays days, always from freshly fetched data
+ * The watchlist, or an empty one when it can't be read — the digest and lists work without it
+ */
+async function currentWatchlist() {
+  try {
+    return await watchlist.get();
+  } catch (err) {
+    console.error("Watchlist unavailable:", err.message);
+    return new Map();
+  }
+}
+
+/**
+ * Digest of cum dates still buyable within the next digestDays days, and of held stocks' payouts
+ * in the same window, from data at most DIGEST_MAX_AGE_MS old
  */
 async function buildDigest(now) {
-  await feed.refresh();
-  const status = feed.status();
+  const status = await feed.get({ maxAgeMs: DIGEST_MAX_AGE_MS });
   if (!status.fetchedAt) return noDataEmbed(status);
 
   const today = now.date;
-  const records = upcoming(status.records, firstBuyableDate(now), { until: addDays(today, digestDays) });
+  const from = firstBuyableDate(now);
+  const until = addDays(today, digestDays);
+  const list = await currentWatchlist();
+  const records = upcoming(status.records, from, { until });
+  const paid = payments(status.records.filter((r) => list.get(r.ticker)), from, { until });
   const quotes = await getQuotes(records.map((r) => r.ticker));
-  return digestEmbed({ records, quotes, today, days: digestDays, status });
+  return digestEmbed({ records, paid, quotes, today, days: digestDays, status, watchlist: list });
 }
 
 async function buildUpcoming(now) {
@@ -98,7 +127,7 @@ async function buildUpcoming(now) {
   const today = now.date;
   const records = upcoming(status.records, firstBuyableDate(now));
   const quotes = await getQuotes(records.map((r) => r.ticker));
-  return upcomingEmbed({ records, quotes, today, status });
+  return upcomingEmbed({ records, quotes, today, status, watchlist: await currentWatchlist() });
 }
 
 async function buildTicker(ticker, now) {
@@ -110,22 +139,68 @@ async function buildTicker(ticker, now) {
   );
   const history = await getDividendHistory(ticker);
   if (!rows.length && !history?.quote && !history?.dividends.length) return unknownTickerEmbed(ticker);
-  return tickerEmbed({ ticker, upcoming: rows, history, quote: history?.quote, today, status });
+  const list = await currentWatchlist();
+  return tickerEmbed({
+    ticker,
+    upcoming: rows,
+    history,
+    quote: history?.quote,
+    today,
+    status,
+    watched: list.has(ticker),
+    lots: list.get(ticker) ?? null,
+  });
 }
 
 /**
- * The daily digest already in the channel today — after a restart, don't post it twice
+ * The watchlist with its stocks' announced dividends and the coming payouts of held ones
+ */
+async function watchlistView(list, now, notes) {
+  const status = await feed.get();
+  const today = now.date;
+  const records = upcoming(
+    status.records.filter((r) => list.has(r.ticker)),
+    firstBuyableDate(now)
+  );
+  const paid = payments(status.records.filter((r) => list.get(r.ticker)), today);
+  const quotes = await getQuotes([...list.keys()]);
+  const { pinned } = watchlist.status();
+  return watchlistEmbed({ list, records, paid, quotes, today, status, notes, pinned });
+}
+
+async function buildWatchlist(now) {
+  return watchlistView(await watchlist.get(), now, []);
+}
+
+/**
+ * `pantau` / `lepas`: change the watchlist, save it to its pinned message, show the result
+ */
+async function buildWatch(action, entries, now) {
+  const { list, lines } = await watchlist.update((current) => applyWatchChange(current, action, entries));
+  console.log(`Watchlist ${action}: ${entries.map((e) => e.ticker).join(" ")} -> ${list.size} stocks`);
+  return watchlistView(list, now, lines);
+}
+
+/**
+ * The scheduled digest already in the channel today — after a restart, don't post it twice
  */
 async function digestPostedToday(channel, today) {
   const recent = await channel.messages.fetch({ limit: 50 }).catch(() => null);
-  return Boolean(
-    recent?.some(
-      (m) =>
-        m.author.id === client.user.id &&
-        dateOf(m.createdTimestamp) === today &&
-        m.embeds[0]?.title?.startsWith(DIGEST_TITLE)
-    )
-  );
+  return Boolean(recent?.some((m) => isScheduledDigest(m, { botId: client.user.id, today })));
+}
+
+/**
+ * Startup check: is there a pinned watchlist, and could the bot pin a new one?
+ */
+async function logWatchlist() {
+  const channel = await digestChannel();
+  if (!channel) return;
+  const list = await currentWatchlist();
+  const { loaded, pinned } = watchlist.status();
+  if (loaded) console.log(`Watchlist: ${list.size} stocks (${pinned ? "pinned message" : "no message yet"})`);
+  if (!pinned && !channel.permissionsFor?.(client.user)?.has(PermissionFlagsBits.PinMessages)) {
+    console.warn("Watchlist: no Pin Messages permission in the channel — grant it, or pin the list message by hand");
+  }
 }
 
 let lastDigestDate = null;
@@ -168,6 +243,7 @@ client.once(Events.ClientReady, async (c) => {
   await feed.refresh();
   const status = feed.status();
   console.log(`Data: ${status.records.length} rows from ${status.source ?? "nowhere"} (${status.health})`);
+  await logWatchlist();
 
   digestTick();
   setInterval(digestTick, SCHEDULER_INTERVAL_MS);
@@ -190,7 +266,15 @@ client.on(Events.MessageCreate, async (message) => {
   } else if (DIGEST_COMMANDS.has(text)) {
     build = () => buildDigest(now);
   } else if (STATUS_COMMANDS.has(text)) {
-    build = async () => statusEmbed(await feed.get(), firstBuyableDate(now));
+    build = async () => statusEmbed(await feed.get(), firstBuyableDate(now), watchlist.status());
+  } else if (WATCHLIST_COMMANDS.has(text)) {
+    build = () => buildWatchlist(now);
+  } else if (WATCH_COMMAND.test(text)) {
+    const [, verb, args] = text.match(WATCH_COMMAND);
+    const entries = parseWatchArgs(args);
+    build = entries
+      ? () => buildWatch(UNWATCH_VERBS.has(verb) ? "remove" : "add", entries, now)
+      : async () => watchUsageEmbed();
   } else {
     // "dividen BBRI", or a bare ticker typed in capitals ("BBRI") so ordinary words like "halo" are ignored
     const ticker = normalizeTicker(text.match(TICKER_COMMAND)?.[1] ?? (/^[A-Z]{4}$/.test(raw) ? raw : null));
@@ -203,7 +287,11 @@ client.on(Events.MessageCreate, async (message) => {
     await message.reply({ embeds: [await build()] });
   } catch (err) {
     console.error(`Command "${text}" failed:`, err);
-    await message.reply("❌ Gagal mengambil data dividen. Coba lagi sebentar lagi.").catch(() => {});
+    const watchCommand = WATCHLIST_COMMANDS.has(text) || WATCH_COMMAND.test(text);
+    const reply = watchCommand
+      ? `❌ Daftar pantauan gagal dibaca atau disimpan: ${err.message}`
+      : "❌ Gagal mengambil data dividen. Coba lagi sebentar lagi.";
+    await message.reply(reply).catch(() => {});
   }
 });
 

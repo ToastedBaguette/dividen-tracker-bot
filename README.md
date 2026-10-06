@@ -6,7 +6,8 @@ evening before a trading day. Replies are in Bahasa Indonesia.
 
 Sister project of [expense-tracker-bot](https://github.com/ToastedBaguette/expense-tracker-bot) and
 [calorie-tracker-bot](https://github.com/ToastedBaguette/calorie-tracker-bot) — same stack: Node.js,
-discord.js, Docker Compose. No database, no Google credentials: the only secret is the Discord token.
+discord.js, Docker Compose. No database, no Google credentials: the only secret is the Discord token,
+and the watchlist is kept in a pinned message in the bot's channel.
 
 ## Features
 
@@ -15,6 +16,7 @@ discord.js, Docker Compose. No database, no Google credentials: the only secret 
 | 📅 **Daily digest** | 20:00 WIB, Sunday–Thursday (the evening before each trading day): stocks whose cum date is in the next 7 days, grouped by date, with dividend per share, yield at the current price, and payment date. "Besok" marks tomorrow as the last day to buy. |
 | 📋 **All upcoming** | `dividen` lists every announced dividend that can still be bought. |
 | 🔎 **Per stock** | `dividen BBRI` (or just `BBRI`): announced dividend, last price, trailing 12-month yield, last 6 payouts. |
+| ⭐ **Watchlist** | `pantau BBRI 10` — watch a stock, optionally with the lots you hold. Watched stocks are starred and listed first in the digest with the cash your lots would get, and the digest shows when a held stock's dividend is paid. |
 | 🚨 **Source alerts** | If the data source breaks (site down, layout changed, data stops updating), the bot says so in the channel once, keeps serving the last good data, and says so again when it recovers. |
 
 **Cum date** is the last day to buy in the regular market and still receive the dividend; buying on
@@ -28,7 +30,10 @@ every list starts from the next day. Not investment advice — confirm on IDX di
 | `dividen` / `jadwal` | All upcoming dividends, nearest cum date first |
 | `dividen BBRI` / `BBRI` | One stock — the bare form must be typed in capitals |
 | `ringkasan` / `digest` | Post the daily digest now |
-| `status` | Data source health, last update, errors |
+| `pantau BBRI` / `pantau BBRI 10` | Watch a stock; the number is the lots you hold (1 lot = 100 shares). Several at once: `pantau BBRI 10 ASII`. `pantau BBRI 0` clears the lots |
+| `lepas BBRI` | Stop watching |
+| `pantauan` | The watchlist: announced dividends, expected payouts, company names |
+| `status` | Data source health, last update, errors, watchlist |
 | `bantuan` / `help` | Usage guide |
 
 ## Data sources
@@ -47,7 +52,9 @@ a paid API can be added as a second provider.
 
 1. **Discord app** — https://discord.com/developers/applications → New Application → Bot → copy the
    token, enable **MESSAGE CONTENT INTENT**. Invite it (OAuth2 → URL Generator → `bot` scope) with
-   *View Channel, Send Messages, Embed Links, Read Message History* in your channel.
+   *View Channel, Send Messages, Embed Links, Read Message History, Pin Messages* in your channel.
+   The watchlist lives in a message the bot pins there, **📌 Daftar Pantauan** — don't delete or unpin
+   it. Without *Pin Messages*, pin that message by hand once.
 2. `cp .env.example .env` and fill in `DISCORD_TOKEN` and `DISCORD_CHANNEL_ID`.
 3. Run:
    ```bash

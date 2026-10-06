@@ -2,6 +2,8 @@ const TIME_ZONE = "Asia/Jakarta";
 const DAY_MS = 24 * 60 * 60 * 1000;
 // IDX regular market closes 15:50 and pre-closing ends 16:00 WIB; after that today's cum date can't be bought
 const MARKET_CLOSE = "16:00";
+// IDX trades in lots of 100 shares
+const LOT_SIZE = 100;
 
 // SahamIDX publishes English month abbreviations; Indonesian ones are accepted in case that changes
 const MONTHS = {
@@ -130,6 +132,15 @@ export function upcoming(records, from, { until = "9999-12-31" } = {}) {
 }
 
 /**
+ * Dividends paid from `from` (up to `until`, inclusive), soonest payment first
+ */
+export function payments(records, from, { until = "9999-12-31" } = {}) {
+  return records
+    .filter((r) => r.paymentDate && r.paymentDate >= from && r.paymentDate <= until)
+    .sort((a, b) => a.paymentDate.localeCompare(b.paymentDate) || a.ticker.localeCompare(b.ticker));
+}
+
+/**
  * [{ cumDate, records }] in input order
  */
 export function groupByCumDate(records) {
@@ -147,6 +158,14 @@ export function groupByCumDate(records) {
 export function dividendYield(amount, price) {
   if (!amount || !price) return null;
   return (amount / price) * 100;
+}
+
+/**
+ * Rupiah paid on `lots` lots, or null when either is unknown
+ */
+export function dividendCash(amount, lots) {
+  if (!amount || !lots) return null;
+  return amount * lots * LOT_SIZE;
 }
 
 /**

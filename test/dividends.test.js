@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   daysBetween,
+  dividendCash,
   dividendYield,
   firstBuyableDate,
   formatDateId,
@@ -11,6 +12,7 @@ import {
   nowParts,
   parseAmount,
   parseDate,
+  payments,
   relativeDay,
   upcoming,
 } from "../src/dividends.js";
@@ -101,10 +103,35 @@ test("groupByCumDate", () => {
   );
 });
 
+test("payments keeps payment dates in the window, soonest first", () => {
+  const paid = [
+    { ticker: "KKGI", cumDate: "2026-09-23", paymentDate: "2026-10-15" },
+    { ticker: "BSSR", cumDate: "2026-09-29", paymentDate: "2026-10-09" },
+    { ticker: "IFII", cumDate: "2026-09-28", paymentDate: "2026-10-15" },
+    { ticker: "OLDS", cumDate: "2026-09-01", paymentDate: "2026-09-20" },
+    { ticker: "NOPY", cumDate: "2026-10-08", paymentDate: null },
+  ];
+  assert.deepEqual(
+    payments(paid, "2026-10-07").map((r) => r.ticker),
+    ["BSSR", "IFII", "KKGI"]
+  );
+  assert.deepEqual(
+    payments(paid, "2026-10-07", { until: "2026-10-13" }).map((r) => r.ticker),
+    ["BSSR"]
+  );
+});
+
 test("dividendYield", () => {
   assert.equal(dividendYield(154, 3080), 5);
   assert.equal(dividendYield(154, null), null);
   assert.equal(dividendYield(null, 3080), null);
+});
+
+test("dividendCash: one lot is 100 shares", () => {
+  assert.equal(dividendCash(209, 10), 209_000);
+  assert.equal(dividendCash(611.93, 3), 183_579);
+  assert.equal(dividendCash(209, null), null);
+  assert.equal(dividendCash(null, 10), null);
 });
 
 test("normalizeTicker", () => {
